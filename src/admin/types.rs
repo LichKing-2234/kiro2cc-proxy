@@ -80,6 +80,9 @@ pub struct CredentialStatusItem {
     /// 禁用原因（None = 未禁用；QuotaExceeded 时前端显示「额度已用尽」而非通用「已禁用」）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<crate::kiro::token_manager::DisabledReason>,
+    /// 脱敏后的 API Key（仅 API Key 凭据有值，用于卡片上辨认账号）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub masked_api_key: Option<String>,
 }
 
 // ============ 操作请求 ============
@@ -104,8 +107,15 @@ pub struct SetPriorityRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddCredentialRequest {
-    /// 刷新令牌（必填）
-    pub refresh_token: String,
+    /// 刷新令牌（OAuth 凭据必填；`authMethod: api_key` 时改填 `kiroApiKey`）
+    pub refresh_token: Option<String>,
+
+    /// Kiro API Key（`authMethod: api_key` 时必填，形如 `ksk_...`）
+    ///
+    /// 与 `refreshToken` 二者其一必填。填了它即视为 API Key 凭据，
+    /// 无需 `refreshToken`，也不参与 token 刷新。
+    #[serde(default)]
+    pub kiro_api_key: Option<String>,
 
     /// 认证方式（可选，默认 social）
     #[serde(default = "default_auth_method")]
@@ -204,6 +214,7 @@ mod tests {
             health_status: crate::kiro::token_manager::HealthStatus::Healthy,
             throttle_count: 0,
             disabled_reason: None,
+            masked_api_key: None,
         }
     }
 
@@ -319,6 +330,11 @@ pub struct AddCredentialResponse {
 pub struct UpdateCredentialRequest {
     /// 刷新令牌（可选，更新后会重新验证）
     pub refresh_token: Option<String>,
+
+    /// Kiro API Key（可选；传空字符串表示清除该字段并退回 OAuth 凭据
+    /// —— 仅当账号同时提供 refreshToken 时才有意义）
+    #[serde(default)]
+    pub kiro_api_key: Option<String>,
 
     /// 认证方式（可选）
     pub auth_method: Option<String>,

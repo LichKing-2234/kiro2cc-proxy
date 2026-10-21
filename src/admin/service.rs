@@ -164,6 +164,7 @@ impl AdminService {
                     .map(|s| s.count_within(entry.id, since) as u64)
                     .unwrap_or(0),
                 disabled_reason: entry.disabled_reason,
+                masked_api_key: entry.masked_api_key,
             })
             .collect();
 
@@ -348,12 +349,29 @@ impl AdminService {
         // 构建账号对象
         let email = req.email.clone();
         let initially_disabled = req.disabled;
+        let refresh_token = req.refresh_token.filter(|s| !s.trim().is_empty());
+        // API Key 与 refreshToken 互斥语义：填了 kiroApiKey 即 API Key 凭据
+        let kiro_api_key = req
+            .kiro_api_key
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let is_api_key = kiro_api_key.is_some()
+            || req
+                .auth_method
+                .eq_ignore_ascii_case("api_key")
+            || req.auth_method.eq_ignore_ascii_case("apikey");
         let new_cred = KiroCredentials {
             id: None,
             access_token: None,
             sso_access_token: None,
-            refresh_token: Some(req.refresh_token),
-            profile_arn: req.profile_arn.filter(|s| !s.is_empty()),
+            refresh_token,
+            kiro_api_key,
+            // API Key 凭据不携带 profileArn（kiro-go 语义）
+            profile_arn: if is_api_key {
+                None
+            } else {
+                req.profile_arn.filter(|s| !s.is_empty())
+            },
             expires_at: None,
             auth_method: Some(req.auth_method),
             client_id: req.client_id,
@@ -384,8 +402,9 @@ impl AdminService {
             .await
             .map_err(|e| self.classify_add_error(e))?;
 
-        // 导入流程会自行验活禁用账号，避免重复请求额度接口
-        if !initially_disabled {
+        // 导入流程会自行验活禁用账号，避免重复请求额度接口；
+        // API Key 凭据没有订阅/用量语义，不发起任何额度查询。
+        if !initially_disabled && !is_api_key {
             let tm = self.token_manager.clone();
             tokio::spawn(async move {
                 if let Err(e) = tm.get_usage_limits_for(credential_id).await {
@@ -1026,5 +1045,69 @@ mod tests {
             .expect("id=1 的账号应存在");
         // 5 条 8 天前（窗口外）+ 3 条 当前（窗口内）→ 期望 3
         assert_eq!(item.throttle_count, 3);
+    }
+
+    /// API Key 账号的列表映射：暴露 maskedApiKey、authMethod 规范化，且不要求 profileArn
+    #[test]
+    fn get_all_credentials_exposes_masked_api_key() {
+        use crate::admin::types::AddCredentialRequest;
+
+        let mut cred = KiroCredentials::default();
+        cred.id = Some(7);
+        cred.auth_method = Some("api_key".to_string());
+        cred.kiro_api_key = Some("ksk_abcdefghijklmnop1234".to_string());
+        let manager = Arc::new(
+            MultiTokenManager::new(Config::default(), vec![cred], None, None, false).unwrap(),
+        );
+        let service = AdminService::new(manager);
+
+        let resp = service.get_all_credentials();
+        let item = resp.credentials.iter().find(|c| c.id == 7).unwrap();
+        assert_eq!(item.auth_method.as_deref(), Some("api_key"));
+        assert_eq!(item.masked_api_key.as_deref(), Some("ksk_...1234"));
+        assert!(!item.has_profile_arn);
+        // 绝不回传完整 key
+        let serialized = serde_json::to_string(&resp).unwrap();
+        assert!(
+            !serialized.contains("abcdefghijklmnop"),
+            "列表响应不得包含完整 API Key"
+        );
+
+        // 管理端新增请求：只给 kiroApiKey、不给 refreshToken 也必须被接受
+        let req = AddCredentialRequest {
+            refresh_token: None,
+            kiro_api_key: Some("ksk_admin_added_value".to_string()),
+            auth_method: "api_key".to_string(),
+            client_id: None,
+            client_secret: None,
+            provider: None,
+            token_endpoint: None,
+            scopes: None,
+            profile_arn: Some("arn:aws:codewhisperer:us-east-1:1:profile/X".to_string()),
+            priority: 0,
+            region: None,
+            auth_region: None,
+            api_region: None,
+            machine_id: None,
+            email: None,
+            nickname: None,
+            proxy_url: None,
+            proxy_username: None,
+            proxy_password: None,
+            disabled: false,
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let added = rt.block_on(service.add_credential(req)).unwrap();
+        assert!(added.success);
+        let snapshot = service.get_all_credentials();
+        let item = snapshot
+            .credentials
+            .iter()
+            .find(|c| c.id == added.credential_id)
+            .unwrap();
+        assert_eq!(item.auth_method.as_deref(), Some("api_key"));
+        assert!(item.masked_api_key.is_some());
+        // API Key 凭据不得持久化 profileArn
+        assert!(!item.has_profile_arn);
     }
 }
