@@ -24,11 +24,12 @@ interface AddCredentialDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
-type AuthMethod = 'social' | 'idc'
+type AuthMethod = 'social' | 'idc' | 'api_key'
 
 export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogProps) {
   const { t } = useTranslation()
   const [refreshToken, setRefreshToken] = useState('')
+  const [kiroApiKey, setKiroApiKey] = useState('')
   const [email, setEmail] = useState('')
   const [authMethod, setAuthMethod] = useState<AuthMethod>('social')
   const [loginSource, setLoginSource] = useState('')
@@ -43,10 +44,16 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const [proxyUsername, setProxyUsername] = useState('')
   const [proxyPassword, setProxyPassword] = useState('')
 
+  const isApiKey = authMethod === 'api_key'
+  const secretField = isApiKey ? 'kiroApiKey' : 'refreshToken'
+  const secret = isApiKey ? kiroApiKey : refreshToken
+  const setSecret = isApiKey ? setKiroApiKey : setRefreshToken
+
   const { mutate, isPending } = useAddCredential()
 
   const resetForm = () => {
     setRefreshToken('')
+    setKiroApiKey('')
     setEmail('')
     setAuthMethod('social')
     setLoginSource('')
@@ -66,8 +73,8 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
     e.preventDefault()
 
     // 验证必填字段
-    if (!refreshToken.trim()) {
-      toast.error(t('credentials.toastRefreshTokenRequired'))
+    if (!secret.trim()) {
+      toast.error(t(isApiKey ? 'credentials.toastKiroApiKeyRequired' : 'credentials.toastRefreshTokenRequired'))
       return
     }
 
@@ -79,15 +86,16 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
 
     mutate(
       {
-        refreshToken: refreshToken.trim(),
-        authMethod,
+        ...(authMethod === 'api_key'
+          ? { authMethod, kiroApiKey: kiroApiKey.trim() }
+          : { authMethod, refreshToken: refreshToken.trim() }),
         // 仅在 social 下提交：切到 idc 后 loginSource 不会自动清空，无条件下发会把 IdC 账号写成脏数据
         provider: authMethod === 'social' ? normalizeLoginSource(loginSource) : undefined,
         email: email.trim() || undefined,
         authRegion: authRegion.trim() || undefined,
         apiRegion: apiRegion.trim() || undefined,
-        clientId: clientId.trim() || undefined,
-        clientSecret: clientSecret.trim() || undefined,
+        clientId: authMethod === 'idc' ? clientId.trim() : undefined,
+        clientSecret: authMethod === 'idc' ? clientSecret.trim() : undefined,
         profileArn: profileArn.trim() || undefined,
         priority: parseInt(priority) || 0,
         machineId: machineId.trim() || undefined,
@@ -126,41 +134,14 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
           <div className="mr-0.5 space-y-5 overflow-y-auto flex-1 py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:-mr-1.5">
             {/* 核心凭据 */}
             <Section icon={KeyRound} title={t('credentials.sectionCore')}>
-              <Field
-                label={t('credentials.refreshTokenLabel')}
-                htmlFor="refreshToken"
-                required
-              >
-                <Input
-                  id="refreshToken"
-                  type="password"
-                  prefix={<KeyRound className="size-[13px]" />}
-                  placeholder={t('credentials.refreshTokenPlaceholder')}
-                  value={refreshToken}
-                  onChange={(e) => setRefreshToken(e.target.value)}
-                  disabled={isPending}
-                />
-              </Field>
-
-              <Field label={t('credentials.emailLabel')} htmlFor="email">
-                <Input
-                  id="email"
-                  type="text"
-                  placeholder={t('credentials.emailPlaceholderAdd')}
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  disabled={isPending}
-                />
-              </Field>
-
               {/* group 分段器无单一控件可关联，label 不出 htmlFor，可访问名称由下方 aria-label 承载 */}
               <Field label={t('credentials.authMethodLabel')}>
                 <div
-                  className="grid grid-cols-2 gap-2"
+                  className="grid grid-cols-3 gap-2"
                   role="group"
                   aria-label={t('credentials.authMethodLabel')}
                 >
-                  {(['social', 'idc'] as const).map((m) => {
+                  {(['social', 'idc', 'api_key'] as const).map((m) => {
                     const on = authMethod === m
                     return (
                       <button
@@ -181,6 +162,33 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
                     )
                   })}
                 </div>
+              </Field>
+
+              <Field
+                label={t(isApiKey ? 'credentials.authMethod_api_key' : 'credentials.refreshTokenLabel')}
+                htmlFor={secretField}
+                required
+              >
+                <Input
+                  id={secretField}
+                  type="password"
+                  prefix={<KeyRound className="size-[13px]" />}
+                  placeholder={isApiKey ? 'ksk_…' : t('credentials.refreshTokenPlaceholder')}
+                  value={secret}
+                  onChange={(e) => setSecret(e.target.value)}
+                  disabled={isPending}
+                />
+              </Field>
+
+              <Field label={t('credentials.emailLabel')} htmlFor="email">
+                <Input
+                  id="email"
+                  type="text"
+                  placeholder={t('credentials.emailPlaceholderAdd')}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  disabled={isPending}
+                />
               </Field>
 
               {/* 登录来源（仅 social 需要；IdC 的 BuilderId 由 authMethod 推断） */}

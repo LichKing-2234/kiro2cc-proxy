@@ -123,9 +123,10 @@ export interface SetPriorityRequest {
 }
 
 // 添加凭据请求
-export interface AddCredentialRequest {
-  refreshToken: string
-  authMethod?: 'social' | 'idc'
+export type AddCredentialRequest = (
+  | { authMethod?: 'social' | 'idc'; refreshToken: string; kiroApiKey?: never }
+  | { authMethod: 'api_key'; kiroApiKey: string; refreshToken?: never }
+) & {
   email?: string
   nickname?: string
   clientId?: string
