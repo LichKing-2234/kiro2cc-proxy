@@ -68,6 +68,10 @@ pub struct SubscriptionInfo {
     /// 可升级能力 (UPGRADE_CAPABLE 等)
     #[serde(default)]
     pub upgrade_capability: Option<String>,
+
+    /// 超额能力
+    #[serde(default)]
+    pub overage_capability: Option<String>,
 }
 
 /// 用户信息
@@ -116,6 +120,10 @@ pub struct UsageBreakdown {
     /// 资源显示名 (Credit)
     #[serde(default)]
     pub display_name: Option<String>,
+
+    /// 资源显示名复数 (Credits)
+    #[serde(default)]
+    pub display_name_plural: Option<String>,
 
     /// 币种 (USD)
     #[serde(default)]
