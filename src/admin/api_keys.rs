@@ -164,6 +164,25 @@ pub async fn get_key_usage_range(
         let error = AdminErrorResponse::internal_error("用量追踪未启用");
         return (StatusCode::SERVICE_UNAVAILABLE, Json(error)).into_response();
     };
+    // Explicit CST dates win over the `days` preset so callers can ask for the
+    // exact window they render; invalid input is rejected instead of clamped.
+    if let (Some(start), Some(end)) = (params.get("start"), params.get("end")) {
+        for value in [start, end] {
+            let Ok(date) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") else {
+                let error = AdminErrorResponse::invalid_request("start/end must be YYYY-MM-DD");
+                return (StatusCode::BAD_REQUEST, Json(error)).into_response();
+            };
+            if date > chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()).date_naive() {
+                let error = AdminErrorResponse::invalid_request("start/end cannot be in the future");
+                return (StatusCode::BAD_REQUEST, Json(error)).into_response();
+            }
+        }
+        if start > end {
+            let error = AdminErrorResponse::invalid_request("start must not be after end");
+            return (StatusCode::BAD_REQUEST, Json(error)).into_response();
+        }
+        return Json(tracker.get_range_summary_for_key_between(id, start, end)).into_response();
+    }
     let days = params
         .get("days")
         .and_then(|v| v.parse::<u32>().ok())

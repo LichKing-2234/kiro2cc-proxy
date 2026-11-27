@@ -78,7 +78,7 @@ pub struct ApiKeyRangeSummary {
     pub api_key_id: u32,
     /// 区间起始 CST 日期（含），格式 YYYY-MM-DD
     pub from_date: String,
-    /// 区间结束 CST 日期（含），恒为今日
+    /// 区间结束 CST 日期（含）
     pub to_date: String,
     pub total_requests: u64,
     pub total_input_tokens: u64,
@@ -89,6 +89,36 @@ pub struct ApiKeyRangeSummary {
     pub total_credits_saved: f64,
     /// 累计 cache 命中的输入 tokens（None 按 0 计入）
     pub total_cache_read_tokens: u64,
+    /// 按 CST 日期升序的每日用量
+    pub by_day: Vec<ApiKeyRangeDay>,
+    /// 按模型汇总的用量
+    pub by_model: Vec<ApiKeyRangeModel>,
+}
+
+/// 区间内单个 CST 日期的用量
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyRangeDay {
+    pub date: String,
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost: f64,
+    pub credits: f64,
+    pub credits_saved: f64,
+}
+
+/// 区间内单个模型的用量
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyRangeModel {
+    pub model: String,
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost: f64,
+    pub credits: f64,
+    pub credits_saved: f64,
 }
 
 /// 指定账号全部留存统计的用量汇总
@@ -208,23 +238,40 @@ impl UsageTracker {
         let cst = FixedOffset::east_opt(8 * 3600).unwrap();
         let today = chrono::Utc::now().with_timezone(&cst).date_naive();
         let from = today - chrono::Duration::days((days - 1) as i64);
-        let from_s = from.format("%Y-%m-%d").to_string();
-        let to_s = today.format("%Y-%m-%d").to_string();
+        self.get_range_summary_for_key_between(
+            api_key_id,
+            &from.format("%Y-%m-%d").to_string(),
+            &today.format("%Y-%m-%d").to_string(),
+        )
+    }
 
-        // YYYY-MM-DD 字典序即时间序
+    /// 按 CST 日期闭区间聚合指定 API Key 的用量。
+    ///
+    /// 日期为 `YYYY-MM-DD`（字典序即时间序），`from_date > to_date` 时返回空区间
+    /// 的零值汇总而非报错；调用方负责校验格式。
+    pub fn get_range_summary_for_key_between(
+        &self,
+        api_key_id: u32,
+        from_date: &str,
+        to_date: &str,
+    ) -> ApiKeyRangeSummary {
         let mut total = DayTotals::default();
+        let mut by_day: std::collections::BTreeMap<String, DayTotals> = Default::default();
+        let mut by_model: std::collections::BTreeMap<String, DayTotals> = Default::default();
         {
             let daily = self.daily.read();
             for (k, t) in daily.iter_key(api_key_id) {
-                if from_s.as_str() <= k.date.as_str() && k.date.as_str() <= to_s.as_str() {
+                if from_date <= k.date.as_str() && k.date.as_str() <= to_date {
                     total.merge(t);
+                    by_day.entry(k.date.clone()).or_default().merge(t);
+                    by_model.entry(k.model.clone()).or_default().merge(t);
                 }
             }
         }
         ApiKeyRangeSummary {
             api_key_id,
-            from_date: from_s,
-            to_date: to_s,
+            from_date: from_date.to_string(),
+            to_date: to_date.to_string(),
             total_requests: total.requests,
             total_input_tokens: total.input_tokens,
             total_output_tokens: total.output_tokens,
@@ -232,6 +279,30 @@ impl UsageTracker {
             total_cost: total.cost,
             total_credits: total.credits,
             total_credits_saved: total.credits_saved,
+            by_day: by_day
+                .into_iter()
+                .map(|(date, t)| ApiKeyRangeDay {
+                    date,
+                    requests: t.requests,
+                    input_tokens: t.input_tokens,
+                    output_tokens: t.output_tokens,
+                    cost: t.cost,
+                    credits: t.credits,
+                    credits_saved: t.credits_saved,
+                })
+                .collect(),
+            by_model: by_model
+                .into_iter()
+                .map(|(model, t)| ApiKeyRangeModel {
+                    model,
+                    requests: t.requests,
+                    input_tokens: t.input_tokens,
+                    output_tokens: t.output_tokens,
+                    cost: t.cost,
+                    credits: t.credits,
+                    credits_saved: t.credits_saved,
+                })
+                .collect(),
         }
     }
 
