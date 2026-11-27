@@ -1456,6 +1456,51 @@ mod tests {
         cleanup_usage_path(&path);
     }
 
+    /// key range：显式日期区间返回每日/每模型分桶，供调用方直接渲染
+    #[tokio::test]
+    async fn test_range_summary_for_key_between_returns_buckets() {
+        let path = temp_usage_path("range_summary_key_between");
+        let tracker = UsageTracker::load(&path).unwrap();
+        let cst = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        let today = chrono::Utc::now().with_timezone(&cst).date_naive();
+        let to_utc = |d: chrono::NaiveDate| {
+            d.and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_local_timezone(cst)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        let yesterday = today - chrono::Duration::days(1);
+
+        inject_key_record_at(&tracker, 3, Some(5), to_utc(today), 1.0, Some(2.0));
+        inject_key_record_at(&tracker, 3, Some(5), to_utc(today), 3.0, None);
+        inject_key_record_at(&tracker, 3, Some(5), to_utc(yesterday), 5.0, Some(7.0));
+        inject_key_record_at(&tracker, 3, Some(5), to_utc(today - chrono::Duration::days(9)), 9.0, Some(9.0));
+
+        let from = yesterday.format("%Y-%m-%d").to_string();
+        let to = today.format("%Y-%m-%d").to_string();
+        let s = tracker.get_range_summary_for_key_between(3, &from, &to);
+        assert_eq!(s.from_date, from);
+        assert_eq!(s.to_date, to);
+        assert_eq!(s.total_requests, 3);
+        assert_eq!(s.by_day.len(), 2);
+        assert_eq!(s.by_day[0].date, from);
+        assert_eq!(s.by_day[0].requests, 1);
+        assert_eq!(s.by_day[1].requests, 2);
+        // 同模型同一天的两条记录合并到一行模型汇总
+        assert_eq!(s.by_model.len(), 1);
+        assert_eq!(s.by_model[0].model, "claude-opus-4.6");
+        assert_eq!(s.by_model[0].requests, 3);
+        // 区间外的记录不计入
+        assert!((s.total_cost - 9.0).abs() < 1e-9);
+
+        // 反向区间返回零值，不 panic 也不回退成全天
+        let reversed = tracker.get_range_summary_for_key_between(3, &to, &from);
+        assert_eq!(reversed.total_requests, 0);
+        assert!(reversed.by_day.is_empty());
+        cleanup_usage_path(&path);
+    }
+
     /// key range：days 越界兜底（0 → 1，极大值 → 366），不 panic
     #[tokio::test]
     async fn test_range_summary_for_key_days_clamped() {
